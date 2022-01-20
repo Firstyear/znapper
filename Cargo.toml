@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-time = { version = "0.2" }
+# Pin to 22 to avoid https://github.com/time-rs/time/issues/293 "fix".
+time = "=0.2.22"
 tracing = "0.1"
 tracing-subscriber = "0.2"
 structopt = { version = "0.3", default-features = false }
