@@ -312,7 +312,7 @@ fn do_init(opt: &ReplOpt) {
      */
     if opt.dryrun {
         info!(
-            "dryrun -> zfs send -R -L {} | zfs recv -F -o mountpoint=none -o readonly=true {}",
+            "dryrun -> zfs send -R -L {} | zfs recv -o mountpoint=none -o readonly=true {}",
             basesnap_name, opt.to_pool
         );
     } else {
@@ -334,7 +334,7 @@ fn do_init(opt: &ReplOpt) {
 
         let recv = Command::new("zfs")
             .arg("recv")
-            .arg("-F")
+            // .arg("-F")
             .arg("-o")
             .arg("mountpoint=none")
             .arg("-o")
@@ -355,7 +355,7 @@ fn do_init(opt: &ReplOpt) {
     }
 
     /*
-     * Remove any holds/previous snaps from previous repls.
+     * Remove any holds/previous snaps from previous repls
      */
     debug!("Available Repl Snaps -> {:?}", snaps);
     for leftover_snap in snaps {
@@ -428,15 +428,15 @@ fn do_repl(opt: &ReplOpt) {
     /*
      * do the send/recv
      */
-    // zfs send -R -h -L nvme@snap1 | zfs recv -F -o mountpoint=none -o readonly=true tank/nvme
+    // zfs send -R -h -L nvme@snap1 | zfs recv -o mountpoint=none -o readonly=true tank/nvme
     if opt.dryrun {
         info!(
-            "dryrun -> zfs send -R -L -I {} {} | zfs recv -F -o mountpoint=none -o readonly=true {}",
+            "dryrun -> zfs send -R -L -I {} {} | zfs recv -o mountpoint=none -o readonly=true {}",
             precursor_name, basesnap_name, opt.to_pool
         );
     } else {
         debug!(
-            "running -> zfs send -R -L -I {} {} | zfs recv -F -o mountpoint=none -o readonly=true {}",
+            "running -> zfs send -R -L -I {} {} | zfs recv -o mountpoint=none -o readonly=true {}",
             precursor_name, basesnap_name, opt.to_pool
         );
         let send = Command::new("zfs")
@@ -459,7 +459,7 @@ fn do_repl(opt: &ReplOpt) {
 
         let recv = Command::new("zfs")
             .arg("recv")
-            .arg("-F")
+            // .arg("-F")
             .arg("-o")
             .arg("mountpoint=none")
             .arg("-o")
@@ -480,10 +480,14 @@ fn do_repl(opt: &ReplOpt) {
     }
 
     /*
-     * Remove any holds/previous snaps from previous repls.
+     * Remove any holds/previous snaps from previous repls on source and dest
      */
     debug!("Available Repl Snaps -> {:?}", from_snaps);
     for leftover_snap in from_snaps {
+        let _ = remove_snap(opt.dryrun, leftover_snap.as_str());
+    }
+    debug!("Available Repl Snaps -> {:?}", to_snaps);
+    for leftover_snap in to_snaps {
         let _ = remove_snap(opt.dryrun, leftover_snap.as_str());
     }
 }
