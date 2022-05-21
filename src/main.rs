@@ -699,7 +699,7 @@ fn do_load_archive(opt: &ArchiveOpt) {
             warn!("You should now setup a remote backup user. For that user in .ssh/authorized_keys set:");
             warn!(r#"  command="/usr/sbin/zfs recv -o mountpoint=none -o readonly=on {}",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty [ssh-key]"#, opt.pool);
             warn!("You must also setup permission delegation for that user to recv replication snapshots");
-            warn!("  zfs allow [user] mount,create,receive {}", opt.pool);
+            warn!("  zfs allow [user] mount,create,receive,readonly,mountpoint {}", opt.pool);
         }
     }
 }
@@ -769,6 +769,7 @@ fn do_repl_remote(opt: &ReplRemoteOpt) {
 
         let send = Command::new("zfs")
             .arg("send")
+            .arg("-F")
             .arg("-R")
             .arg("-L")
             .arg("-w")
