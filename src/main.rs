@@ -501,15 +501,35 @@ fn do_repl(opt: &ReplOpt) {
             .stdin(send.stdout.take().unwrap())
             .status();
 
-        if let Err(e) = recv {
-            error!("recv failed -> {:?}", e);
-            return;
-        } else if let Err(e) = send.wait() {
-            error!("send failed -> {:?}", e);
-            return;
-        } else {
-            info!("Incremental replication success")
-        }
+        match recv {
+            Ok(status) => {
+                if !status.success() {
+                    error!("recv failed");
+                    return;
+                }
+                // Happy path.
+            }
+            Err(e) => {
+                error!("ssh recv failed -> {:?}", e);
+                return;
+            }
+        };
+
+        match send.wait() {
+            Ok(status) => {
+                if !status.success() {
+                    error!("send failed");
+                    return;
+                }
+                // Happy path.
+            }
+            Err(e) => {
+                error!("send failed -> {:?}", e);
+                return;
+            }
+        };
+
+        info!("Incremental replication success")
     }
 
     /*
@@ -727,12 +747,12 @@ fn do_repl_remote(opt: &ReplRemoteOpt) {
 
     if opt.dryrun {
         info!(
-            "dryrun -> zfs send -R -L -I -w {} {} | ssh {}",
+            "dryrun -> zfs send -R -L -w -I {} {} | ssh {}",
             precursor_name, basesnap_name, opt.remote_ssh
         );
     } else {
         debug!(
-            "running -> zfs send -R -L -I -w {} {} | ssh {}",
+            "running -> zfs send -R -L -w -I {} {} | ssh {}",
             precursor_name, basesnap_name, opt.remote_ssh
         );
 
@@ -740,8 +760,8 @@ fn do_repl_remote(opt: &ReplRemoteOpt) {
             .arg("send")
             .arg("-R")
             .arg("-L")
-            .arg("-I")
             .arg("-w")
+            .arg("-I")
             .arg(precursor_name.as_str())
             .arg(basesnap_name.as_str())
             .stdout(Stdio::piped())
@@ -760,15 +780,35 @@ fn do_repl_remote(opt: &ReplRemoteOpt) {
             .stdin(send.stdout.take().unwrap())
             .status();
 
-        if let Err(e) = recv {
-            error!("ssh recv failed -> {:?}", e);
-            return;
-        } else if let Err(e) = send.wait() {
-            error!("send failed -> {:?}", e);
-            return;
-        } else {
-            info!("Incremental remote replication success")
-        }
+        match recv {
+            Ok(status) => {
+                if !status.success() {
+                    error!("ssh recv failed");
+                    return;
+                }
+                // Happy path.
+            }
+            Err(e) => {
+                error!("ssh recv failed -> {:?}", e);
+                return;
+            }
+        };
+
+        match send.wait() {
+            Ok(status) => {
+                if !status.success() {
+                    error!("send failed");
+                    return;
+                }
+                // Happy path.
+            }
+            Err(e) => {
+                error!("send failed -> {:?}", e);
+                return;
+            }
+        };
+
+        info!("Incremental remote replication success")
     }
 
     /*
