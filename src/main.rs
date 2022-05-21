@@ -1,4 +1,5 @@
-#![deny(warnings)]
+// #![deny(warnings)]
+
 #![warn(unused_extern_crates)]
 #![deny(clippy::unwrap_used)]
 #![deny(clippy::expect_used)]
@@ -45,6 +46,21 @@ struct ReplOpt {
 }
 
 #[derive(Debug, StructOpt)]
+struct ArchiveOpt {
+    pool: String,
+    #[structopt(short = "n")]
+    dryrun: bool,
+}
+
+#[derive(Debug, StructOpt)]
+struct ReplRemoteOpt {
+    pool: String,
+    remote_ssh: String,
+    #[structopt(short = "n")]
+    dryrun: bool,
+}
+
+#[derive(Debug, StructOpt)]
 enum Action {
     #[structopt(name = "list_snapshots")]
     List(ListOpt),
@@ -52,6 +68,14 @@ enum Action {
     Init(ReplOpt),
     #[structopt(name = "repl")]
     Repl(ReplOpt),
+
+    #[structopt(name = "remote_init_archive")]
+    InitArchive(ArchiveOpt),
+    #[structopt(name = "remote_load_archive")]
+    LoadArchive(ArchiveOpt),
+    #[structopt(name = "remote_repl")]
+    ReplRemote(ReplRemoteOpt),
+
     #[structopt(name = "snapshot")]
     Snapshot(Opt),
     #[structopt(name = "snapshot_cleanup")]
@@ -309,10 +333,11 @@ fn do_init(opt: &ReplOpt) {
 
     /*
      * do the send/recv
+     * -w for encyrption to stay raw
      */
     if opt.dryrun {
         info!(
-            "dryrun -> zfs send -R -L {} | zfs recv -o mountpoint=none -o readonly=true {}",
+            "dryrun -> zfs send -R -L -w {} | zfs recv -o mountpoint=none -o readonly=true {}",
             basesnap_name, opt.to_pool
         );
     } else {
@@ -320,6 +345,7 @@ fn do_init(opt: &ReplOpt) {
             .arg("send")
             .arg("-R")
             .arg("-L")
+            .arg("-w")
             .arg(basesnap_name.as_str())
             .stdout(Stdio::piped())
             .spawn();
@@ -334,7 +360,6 @@ fn do_init(opt: &ReplOpt) {
 
         let recv = Command::new("zfs")
             .arg("recv")
-            // .arg("-F")
             .arg("-o")
             .arg("mountpoint=none")
             .arg("-o")
@@ -431,12 +456,12 @@ fn do_repl(opt: &ReplOpt) {
     // zfs send -R -h -L nvme@snap1 | zfs recv -o mountpoint=none -o readonly=true tank/nvme
     if opt.dryrun {
         info!(
-            "dryrun -> zfs send -R -L -I {} {} | zfs recv -o mountpoint=none -o readonly=true {}",
+            "dryrun -> zfs send -R -L -I -w {} {} | zfs recv -o mountpoint=none -o readonly=true {}",
             precursor_name, basesnap_name, opt.to_pool
         );
     } else {
         debug!(
-            "running -> zfs send -R -L -I {} {} | zfs recv -o mountpoint=none -o readonly=true {}",
+            "running -> zfs send -R -L -I -w {} {} | zfs recv -o mountpoint=none -o readonly=true {}",
             precursor_name, basesnap_name, opt.to_pool
         );
         let send = Command::new("zfs")
@@ -444,6 +469,7 @@ fn do_repl(opt: &ReplOpt) {
             .arg("-R")
             .arg("-L")
             .arg("-I")
+            .arg("-w")
             .arg(precursor_name.as_str())
             .arg(basesnap_name.as_str())
             .stdout(Stdio::piped())
@@ -459,7 +485,6 @@ fn do_repl(opt: &ReplOpt) {
 
         let recv = Command::new("zfs")
             .arg("recv")
-            // .arg("-F")
             .arg("-o")
             .arg("mountpoint=none")
             .arg("-o")
@@ -492,7 +517,42 @@ fn do_repl(opt: &ReplOpt) {
     }
 }
 
+fn do_init_archive(opt: &ArchiveOpt) {
+    debug!("do_init_archive");
+
+    let now_ts = match OffsetDateTime::try_now_local() {
+        Ok(t) => t.format("%Y_%m_%d_%H_%M_%S"),
+        Err(_) => {
+            error!("Unable to determine time");
+            return;
+        }
+    };
+
+    debug!("{:?}", now_ts);
+}
+
+fn do_load_archive(opt: &ArchiveOpt) {
+    debug!("do_load_archive");
+}
+
+fn do_repl_remote(opt: &ReplRemoteOpt) {
+    debug!("do_repl_remote");
+
+    let now_ts = match OffsetDateTime::try_now_local() {
+        Ok(t) => t.format("%Y_%m_%d_%H_%M_%S"),
+        Err(_) => {
+            error!("Unable to determine time");
+            return;
+        }
+    };
+
+    debug!("{:?}", now_ts);
+}
+
+
 // https://doc.rust-lang.org/std/process/struct.Stdio.html#impl-From%3CChildStdout%3E
+
+// use -F when doing remote repl!
 
 fn main() {
     let filter_layer = EnvFilter::try_from_default_env()
@@ -513,6 +573,9 @@ fn main() {
         Action::List(opt) => do_list(&opt),
         Action::Init(opt) => do_init(&opt),
         Action::Repl(opt) => do_repl(&opt),
+        Action::InitArchive(opt) => do_init_archive(&opt),
+        Action::LoadArchive(opt) => do_load_archive(&opt),
+        Action::ReplRemote(opt) => do_repl_remote(&opt),
         Action::Snapshot(opt) => do_snap(&opt),
         Action::SnapshotCleanup(opt) => do_snap_cleanup(&opt),
     }
