@@ -17,7 +17,7 @@ use tracing_subscriber::prelude::*;
 use tracing_subscriber::{fmt, EnvFilter};
 use std::fs::File;
 
-use std::io::{self, Read};
+use std::io;
 
 #[derive(Debug, StructOpt)]
 struct Opt {
@@ -645,7 +645,7 @@ fn do_load_archive(opt: &ArchiveOpt) {
             .arg("-o")
             .arg("readonly=on")
             .arg(opt.pool.as_str())
-            .stdout(Stdio::piped())
+            .stdin(Stdio::piped())
             .spawn();
 
         let mut recv = match recv {
@@ -675,7 +675,11 @@ fn do_load_archive(opt: &ArchiveOpt) {
             error!("recv failed -> {:?}", e);
             return;
         } else {
-            info!("Initial replication archive load success")
+            info!("Initial replication archive load success");
+            warn!("You should now setup a remote backup user. For that user in .ssh/authorized_keys set:");
+            warn!(r#"  command="/usr/sbin/zfs recv -o mountpoint=none -o readonly=on {}",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty [ssh-key]"#, opt.pool);
+            warn!("You must also setup permission delegation for that user to recv replication snapshots");
+            warn!("  zfs allow [user] mount,create,receive {}", opt.pool);
         }
     }
 }
@@ -692,6 +696,88 @@ fn do_repl_remote(opt: &ReplRemoteOpt) {
     };
 
     debug!("{:?}", now_ts);
+
+    let from_snaps: Vec<_> = match remote_snap_list(opt.pool.as_str()) {
+        Ok(snaps) => snaps,
+        Err(_) => {
+            return;
+        }
+    };
+
+    debug!("{:?}", from_snaps);
+
+    // What is the precursor snap? We remove it from the set of cleanup snaps.
+    // Because this is a remote sync, it "should" be our OLDEST repl snapshot.
+    let precursor_name = match from_snaps.get(0)
+    {
+        Some(n) => n,
+        None => {
+            error!("No previous matching snaps available - you may need to restart repl");
+            return;
+        }
+    };
+
+    /*
+     * Init a new repl snap for our current point in time.
+     */
+    let basesnap_name = format!("{}@remote_{}", opt.pool, now_ts);
+    if create_recurse_snap(opt.dryrun, basesnap_name.as_str()).is_err() {
+        return;
+    }
+
+    if opt.dryrun {
+        info!(
+            "dryrun -> zfs send -R -L -I -w {} {} | ssh {}",
+            precursor_name, basesnap_name, opt.remote_ssh
+        );
+    } else {
+        debug!(
+            "running -> zfs send -R -L -I -w {} {} | ssh {}",
+            precursor_name, basesnap_name, opt.remote_ssh
+        );
+
+        let send = Command::new("zfs")
+            .arg("send")
+            .arg("-R")
+            .arg("-L")
+            .arg("-I")
+            .arg("-w")
+            .arg(precursor_name.as_str())
+            .arg(basesnap_name.as_str())
+            .stdout(Stdio::piped())
+            .spawn();
+
+        let mut send = match send {
+            Ok(send) => send,
+            Err(e) => {
+                error!("send failed -> {:?}", e);
+                return;
+            }
+        };
+
+        let recv = Command::new("ssh")
+            .arg(opt.remote_ssh.as_str())
+            .stdin(send.stdout.take().unwrap())
+            .status();
+
+        if let Err(e) = recv {
+            error!("ssh recv failed -> {:?}", e);
+            return;
+        } else if let Err(e) = send.wait() {
+            error!("send failed -> {:?}", e);
+            return;
+        } else {
+            info!("Incremental remote replication success")
+        }
+    }
+
+    /*
+     * Remove any holds/previous snaps from previous repls on source and dest
+     */
+    debug!("Available Repl Snaps -> {:?}", from_snaps);
+    for leftover_snap in from_snaps {
+        let _ = remove_snap(opt.dryrun, leftover_snap.as_str());
+    }
 }
 
 
