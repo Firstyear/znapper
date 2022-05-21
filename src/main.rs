@@ -15,6 +15,9 @@ use time::OffsetDateTime;
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{fmt, EnvFilter};
+use std::fs::File;
+
+use std::io::{self, Read};
 
 #[derive(Debug, StructOpt)]
 struct Opt {
@@ -48,6 +51,7 @@ struct ReplOpt {
 #[derive(Debug, StructOpt)]
 struct ArchiveOpt {
     pool: String,
+    file: String,
     #[structopt(short = "n")]
     dryrun: bool,
 }
@@ -165,6 +169,10 @@ fn filter_snap_list(filter: &str, pool_name: &str) -> Result<Vec<String>, ()> {
 
 fn repl_snap_list(pool_name: &str) -> Result<Vec<String>, ()> {
     filter_snap_list("repl_", pool_name)
+}
+
+fn remote_snap_list(pool_name: &str) -> Result<Vec<String>, ()> {
+    filter_snap_list("remote_", pool_name)
 }
 
 fn auto_snap_list(pool_name: &str) -> Result<Vec<String>, ()> {
@@ -529,6 +537,88 @@ fn do_init_archive(opt: &ArchiveOpt) {
     };
 
     debug!("{:?}", now_ts);
+
+    let snaps: Vec<_> = match remote_snap_list(opt.pool.as_str()) {
+        Ok(snaps) => snaps,
+        Err(_) => {
+            return;
+        }
+    };
+
+    /*
+     * Init a base snap
+     * Set the hold on the basesnap
+     */
+    let basesnap_name = format!("{}@remote_{}", opt.pool, now_ts);
+
+    if create_recurse_snap(opt.dryrun, basesnap_name.as_str()).is_err() {
+        return;
+    }
+
+    /*
+     * do the send/recv
+     * -w for encyrption to stay raw
+     */
+    if opt.dryrun {
+        info!(
+            "dryrun -> zfs send -R -L -w {} > {}", basesnap_name, opt.file
+        );
+    } else {
+        let mut file = match File::create(&opt.file) {
+            Ok(f) => f,
+            Err(e) => {
+                error!("failed to open file -> {:?}", e);
+                return;
+            }
+        };
+
+        let send = Command::new("zfs")
+            .arg("send")
+            .arg("-R")
+            .arg("-L")
+            .arg("-w")
+            .arg(basesnap_name.as_str())
+            .stdout(Stdio::piped())
+            .spawn();
+
+        let mut send = match send {
+            Ok(send) => send,
+            Err(e) => {
+                error!("send failed -> {:?}", e);
+                return;
+            }
+        };
+
+        let mut stdout = match send.stdout.take() {
+            Some(s) => s,
+            None => {
+                error!("Failed to connect to stdout of zfs send process");
+                return;
+            }
+        };
+
+        match io::copy(&mut stdout, &mut file) {
+            Ok(b) => debug!("wrote {} bytes", b),
+            Err(e) => {
+                error!("Failed to write to file -> {:?}", e);
+            }
+        };
+
+        if let Err(e) = send.wait() {
+            error!("send failed -> {:?}", e);
+            return;
+        } else {
+            info!("Initial replication archive success")
+        }
+    }
+
+    /*
+     * Remove any holds/previous snaps from previous remotes
+     */
+    debug!("Available Remote Repl Snaps -> {:?}", snaps);
+    for leftover_snap in snaps {
+        let _ = remove_snap(opt.dryrun, leftover_snap.as_str());
+    }
 }
 
 fn do_load_archive(opt: &ArchiveOpt) {
