@@ -623,6 +623,61 @@ fn do_init_archive(opt: &ArchiveOpt) {
 
 fn do_load_archive(opt: &ArchiveOpt) {
     debug!("do_load_archive");
+
+    if opt.dryrun {
+        info!(
+            "dryrun -> cat {} | zfs recv -o mountpoint=none -o readonly=true {}",
+            opt.file, opt.pool
+        );
+    } else {
+        let mut file = match File::open(&opt.file) {
+            Ok(f) => f,
+            Err(e) => {
+                error!("failed to open file -> {:?}", e);
+                return;
+            }
+        };
+
+        let recv = Command::new("zfs")
+            .arg("recv")
+            .arg("-o")
+            .arg("mountpoint=none")
+            .arg("-o")
+            .arg("readonly=on")
+            .arg(opt.pool.as_str())
+            .stdout(Stdio::piped())
+            .spawn();
+
+        let mut recv = match recv {
+            Ok(recv) => recv,
+            Err(e) => {
+                error!("recv failed -> {:?}", e);
+                return;
+            }
+        };
+
+        let mut stdin = match recv.stdin.take() {
+            Some(s) => s,
+            None => {
+                error!("Failed to connect to stdin of zfs recv process");
+                return;
+            }
+        };
+
+        match io::copy(&mut file, &mut stdin) {
+            Ok(b) => debug!("wrote {} bytes", b),
+            Err(e) => {
+                error!("Failed to write to zfs recv -> {:?}", e);
+            }
+        };
+
+        if let Err(e) = recv.wait() {
+            error!("recv failed -> {:?}", e);
+            return;
+        } else {
+            info!("Initial replication archive load success")
+        }
+    }
 }
 
 fn do_repl_remote(opt: &ReplRemoteOpt) {
