@@ -727,8 +727,19 @@ fn do_repl_remote(opt: &ReplRemoteOpt) {
     debug!("{:?}", from_snaps);
 
     // What is the precursor snap? We remove it from the set of cleanup snaps.
-    // Because this is a remote sync, it "should" be our OLDEST repl snapshot.
-    let precursor_name = match from_snaps.get(0)
+    // Because this is a remote sync, it "should" be our OLDEST repl snapshot, rooted
+    // at the pool root.
+    let prefix = format!("{}@", opt.pool);
+    let precursor_name = match from_snaps.iter()
+        .filter_map(|snap| {
+            if snap.starts_with(prefix.as_str()) {
+                Some(snap)
+            } else {
+                None
+            }
+        })
+        .take(1)
+        .next()
     {
         Some(n) => n,
         None => {
