@@ -799,7 +799,7 @@ fn do_repl_remote(opt: &ReplRemoteOpt) {
             }
         };
 
-         send.wait() {
+        match send.wait() {
             Ok(status) => {
                 if !status.success() {
                     error!("send failed");
