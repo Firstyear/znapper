@@ -503,10 +503,7 @@ fn do_repl(opt: &ReplOpt) {
 
         match recv {
             Ok(status) => {
-                if !status.success() {
-                    error!("recv failed");
-                    return;
-                }
+                warn!("recv code {}", status.code().unwrap_or(0));
                 // Happy path.
             }
             Err(e) => {
@@ -697,9 +694,9 @@ fn do_load_archive(opt: &ArchiveOpt) {
         } else {
             info!("Initial replication archive load success");
             warn!("You should now setup a remote backup user. For that user in .ssh/authorized_keys set:");
-            warn!(r#"  command="/usr/sbin/zfs recv -o mountpoint=none -o readonly=on {}",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty [ssh-key]"#, opt.pool);
+            warn!(r#"  command="/usr/sbin/zfs -F recv -x mountpoint -x readonly {}",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty [ssh-key]"#, opt.pool);
             warn!("You must also setup permission delegation for that user to recv replication snapshots");
-            warn!("  zfs allow [user] mount,create,receive,readonly,mountpoint {}", opt.pool);
+            warn!("  zfs allow [user] mount,create,receive {}", opt.pool);
         }
     }
 }
@@ -769,7 +766,6 @@ fn do_repl_remote(opt: &ReplRemoteOpt) {
 
         let send = Command::new("zfs")
             .arg("send")
-            .arg("-F")
             .arg("-R")
             .arg("-L")
             .arg("-w")
@@ -794,10 +790,7 @@ fn do_repl_remote(opt: &ReplRemoteOpt) {
 
         match recv {
             Ok(status) => {
-                if !status.success() {
-                    error!("ssh recv failed");
-                    return;
-                }
+                warn!("recv code {}", status.code().unwrap_or(0));
                 // Happy path.
             }
             Err(e) => {
@@ -806,7 +799,7 @@ fn do_repl_remote(opt: &ReplRemoteOpt) {
             }
         };
 
-        match send.wait() {
+         send.wait() {
             Ok(status) => {
                 if !status.success() {
                     error!("send failed");
