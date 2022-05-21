@@ -79,6 +79,8 @@ enum Action {
     LoadArchive(ArchiveOpt),
     #[structopt(name = "remote_repl")]
     ReplRemote(ReplRemoteOpt),
+    #[structopt(name = "remote_snapshot_cleanup")]
+    RemoteSnapshotCleanup(CleanupOpt),
 
     #[structopt(name = "snapshot")]
     Snapshot(Opt),
@@ -819,16 +821,55 @@ fn do_repl_remote(opt: &ReplRemoteOpt) {
     /*
      * Remove any holds/previous snaps from previous repls on source and dest
      */
+     /*
     debug!("Available Repl Snaps -> {:?}", from_snaps);
     for leftover_snap in from_snaps {
         let _ = remove_snap(opt.dryrun, leftover_snap.as_str());
+    }
+    */
+}
+
+fn do_remote_snap_cleanup(opt: &CleanupOpt) {
+    let dur = time::Duration::hours(opt.keep_hours as i64);
+    let now_ts = match OffsetDateTime::try_now_local() {
+        Ok(t) => (t - dur).format("%Y_%m_%d_%H_%M_%S"),
+        Err(_) => {
+            error!("Unable to determine time");
+            return;
+        }
+    };
+
+    debug!("{:?}", now_ts);
+
+    let snaps: Vec<_> = match remote_snap_list(opt.pool.as_str()) {
+        Ok(snaps) => snaps,
+        Err(_) => {
+            return;
+        }
+    };
+
+    let up_to_ts = format!("remote_{}", now_ts);
+
+    let remove_snaps: Vec<_> = snaps
+        .into_iter()
+        .filter(|snap_name| {
+            if let Some(n) = snap_name.rsplit("@").next() {
+                n.starts_with("auto_") && n < up_to_ts.as_str()
+            } else {
+                false
+            }
+        })
+        .collect();
+
+    debug!("would remove -> {:?}", remove_snaps);
+
+    for snap in remove_snaps {
+        let _ = remove_snap(opt.dryrun, snap.as_str());
     }
 }
 
 
 // https://doc.rust-lang.org/std/process/struct.Stdio.html#impl-From%3CChildStdout%3E
-
-// use -F when doing remote repl!
 
 fn main() {
     let filter_layer = EnvFilter::try_from_default_env()
@@ -852,6 +893,7 @@ fn main() {
         Action::InitArchive(opt) => do_init_archive(&opt),
         Action::LoadArchive(opt) => do_load_archive(&opt),
         Action::ReplRemote(opt) => do_repl_remote(&opt),
+        Action::RemoteSnapshotCleanup(opt) => do_remote_snap_cleanup(&opt),
         Action::Snapshot(opt) => do_snap(&opt),
         Action::SnapshotCleanup(opt) => do_snap_cleanup(&opt),
     }
