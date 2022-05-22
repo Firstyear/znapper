@@ -589,13 +589,13 @@ fn do_repl_inner(opt: &ReplOpt, precursor_name: &str, basesnap_name: &str) -> Re
 }
 
 fn get_auto_basesnap(pool_name: &str) -> Option<String> {
-    let snaps: Vec<_> = filter_snap_list("auto_", pool_name, true).ok()?;
+    let snaps: Vec<_> = filter_snap_list("auto_", pool_name, false).ok()?;
 
     // Find the "latest" autosnap.
     snaps
-        .iter()
+        .into_iter()
         .last()
-        .and_then(|snap| snap.rsplit("@").map(str::to_string).next())
+        // .and_then(|snap| snap.rsplit("@").map(str::to_string).next())
 }
 
 fn do_init_archive(opt: &InitArchiveOpt) {
