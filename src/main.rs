@@ -821,6 +821,11 @@ fn do_repl_remote(opt: &ReplRemoteOpt) {
         }
     };
 
+    if precursor_name == basesnap_name {
+        warn!("No action required - snapshots are in the same state!");
+        return;
+    }
+
     /*
      * Remove any holds/previous snaps from previous repls on source and dest
      */
@@ -845,7 +850,7 @@ fn do_repl_remote(opt: &ReplRemoteOpt) {
             .arg("-w")
             .arg("-I")
             .arg(precursor_name)
-            .arg(basesnap_name)
+            .arg(&basesnap_name)
             .stdout(Stdio::piped())
             .spawn();
 
