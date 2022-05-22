@@ -44,9 +44,6 @@ struct CleanupOpt {
 struct ReplOpt {
     from_pool: String,
     to_pool: String,
-    /// Where the key is located. Must be file:///path/to/file.
-    /// Generate with: openssl rand -hex -out /root/key 32
-    keylocation: Option<String>,
     #[structopt(short = "n")]
     dryrun: bool,
 }
@@ -346,25 +343,19 @@ fn do_init(opt: &ReplOpt) {
 
     /*
      * do the send/recv
-     * Can't use -w, we re-encrypt on the recv.
+     * -w for encyrption to stay raw. Is that needed locally?
      */
     if opt.dryrun {
-        if let Some(kl) = opt.keylocation.as_ref() {
-            info!(
-                "dryrun -> zfs send -v -R -L {} | zfs recv -o mountpoint=none -o readonly=true -o encryption=aes-128-gcm -o keyformat=hex -o keylocation={} {}",
-                basesnap_name, kl, opt.to_pool
-            );
-        } else {
-            info!(
-                "dryrun -> zfs send -v -R -L {} | zfs recv -o mountpoint=none -o readonly=true {}",
-                basesnap_name, opt.to_pool
-            );
-        }
+        info!(
+            "dryrun -> zfs send -v -R -w -L {} | zfs recv -o mountpoint=none -o readonly=on {}",
+            basesnap_name, opt.to_pool
+        );
     } else {
         let send = Command::new("zfs")
             .arg("send")
             .arg("-v")
             .arg("-R")
+            .arg("-w")
             .arg("-L")
             .arg(basesnap_name.as_str())
             .stdout(Stdio::piped())
@@ -378,33 +369,15 @@ fn do_init(opt: &ReplOpt) {
             }
         };
 
-        let recv = if let Some(kl) = opt.keylocation.as_ref() {
-            Command::new("zfs")
-                .arg("recv")
-                .arg("-o")
-                .arg("mountpoint=none")
-                .arg("-o")
-                .arg("readonly=on")
-                .arg("-o")
-                .arg("encryption=aes-128-gcm")
-                .arg("-o")
-                .arg("keyformat=hex")
-                .arg("-o")
-                .arg(kl)
-                .arg(opt.to_pool.as_str())
-                .stdin(send.stdout.take().unwrap())
-                .status()
-        } else {
-            Command::new("zfs")
-                .arg("recv")
-                .arg("-o")
-                .arg("mountpoint=none")
-                .arg("-o")
-                .arg("readonly=on")
-                .arg(opt.to_pool.as_str())
-                .stdin(send.stdout.take().unwrap())
-                .status()
-        };
+        let recv = Command::new("zfs")
+            .arg("recv")
+            .arg("-o")
+            .arg("mountpoint=none")
+            .arg("-o")
+            .arg("readonly=on")
+            .arg(opt.to_pool.as_str())
+            .stdin(send.stdout.take().unwrap())
+            .status();
 
         if let Err(e) = recv {
             error!("recv failed -> {:?}", e);
@@ -491,21 +464,22 @@ fn do_repl(opt: &ReplOpt) {
     /*
      * do the send/recv
      */
-    // zfs send -R -h -L nvme@snap1 | zfs recv -o mountpoint=none -o readonly=true tank/nvme
+    // zfs send -R -h -L nvme@snap1 | zfs recv -o mountpoint=none -o readonly=on tank/nvme
     if opt.dryrun {
         info!(
-            "dryrun -> zfs send -v -R -L -I {} {} | zfs recv -o mountpoint=none -o readonly=true {}",
+            "dryrun -> zfs send -v -R -w -L -I {} {} | zfs recv -o mountpoint=none -o readonly=on {}",
             precursor_name, basesnap_name, opt.to_pool
         );
     } else {
         debug!(
-            "running -> zfs send -v -R -L -I {} {} | zfs recv -o mountpoint=none -o readonly=true {}",
+            "running -> zfs send -v -R -w -L -I {} {} | zfs recv -o mountpoint=none -o readonly=on {}",
             precursor_name, basesnap_name, opt.to_pool
         );
         let send = Command::new("zfs")
             .arg("send")
             .arg("-v")
             .arg("-R")
+            .arg("-w")
             .arg("-L")
             .arg("-I")
             .arg(precursor_name.as_str())
@@ -675,7 +649,7 @@ fn do_load_archive(opt: &ArchiveOpt) {
 
     if opt.dryrun {
         info!(
-            "dryrun -> cat {} | zfs recv -o mountpoint=none -o readonly=true {}",
+            "dryrun -> cat {} | zfs recv -o mountpoint=none -o readonly=on {}",
             opt.file, opt.pool
         );
     } else {
