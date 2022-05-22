@@ -9,13 +9,13 @@
 #![deny(clippy::needless_pass_by_value)]
 #![deny(clippy::trivially_copy_pass_by_ref)]
 
+use std::fs::File;
 use std::process::{Command, Stdio};
 use structopt::StructOpt;
 use time::OffsetDateTime;
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{fmt, EnvFilter};
-use std::fs::File;
 
 use std::io;
 
@@ -580,7 +580,8 @@ fn do_init_archive(opt: &ArchiveOpt) {
      */
     if opt.dryrun {
         info!(
-            "dryrun -> zfs send -R -L -w {} > {}", basesnap_name, opt.file
+            "dryrun -> zfs send -R -L -w {} > {}",
+            basesnap_name, opt.file
         );
     } else {
         let mut file = match File::create(&opt.file) {
@@ -696,7 +697,10 @@ fn do_load_archive(opt: &ArchiveOpt) {
         } else {
             info!("Initial replication archive load success");
             warn!("You should now setup a remote backup user. For that user in .ssh/authorized_keys set:");
-            warn!(r#"  command="/usr/sbin/zfs -F recv -x mountpoint -x readonly {}",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty [ssh-key]"#, opt.pool);
+            warn!(
+                r#"  command="/usr/sbin/zfs recv -x mountpoint -x readonly {}",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty [ssh-key]"#,
+                opt.pool
+            );
             warn!("You must also setup permission delegation for that user to recv replication snapshots");
             warn!("  zfs allow [user] mount,create,receive {}", opt.pool);
         }
@@ -729,7 +733,8 @@ fn do_repl_remote(opt: &ReplRemoteOpt) {
     // Because this is a remote sync, it "should" be our OLDEST repl snapshot, rooted
     // at the pool root.
     let prefix = format!("{}@", opt.pool);
-    let precursor_name = match from_snaps.iter()
+    let precursor_name = match from_snaps
+        .iter()
         .filter_map(|snap| {
             if snap.starts_with(prefix.as_str()) {
                 Some(snap)
@@ -737,8 +742,8 @@ fn do_repl_remote(opt: &ReplRemoteOpt) {
                 None
             }
         })
-        .take(1)
-        .next()
+        // Per the below, we need the LATEST snapshot to anchor from
+        .last()
     {
         Some(n) => n,
         None => {
@@ -755,25 +760,78 @@ fn do_repl_remote(opt: &ReplRemoteOpt) {
         return;
     }
 
+    /*
+     * If you get:
+     *  cannot receive incremental stream: most recent snapshot of tank/remote does not
+     *  match incremental source
+     *
+     * ZFS wants to send from the 'latest' the remote knows about. You can't repeat-send
+     * snapshot. So let say the source has:
+     *
+     * NAME                                  USED  AVAIL     REFER  MOUNTPOINT
+     * tank@remote_2022_05_22_12_09_46         0B      -      100K  -
+     * tank@remote_2022_05_22_12_11_24         0B      -      100K  -
+     * tank@remote_2022_05_22_12_11_51         0B      -      100K  -
+     * tank@remote_2022_05_22_12_12_59         0B      -      100K  -
+     *
+     * And the remote has:
+     *
+     * NAME                                  USED  AVAIL     REFER  MOUNTPOINT
+     * tank/remote@remote_2022_05_22_12_09_46         0B      -      100K  -
+     * tank/remote@remote_2022_05_22_12_11_24         0B      -      100K  -
+     *
+     * And we issued:
+     *
+     * zfs send -R -L -w -I tank@remote_2022_05_22_12_09_46 tank@remote_2022_05_22_12_12_59
+     * Because 09_46 is not the "latest" on remote, that's why it won't apply. We needed to anchor
+     * from 11_24 instead.
+     *
+     */
+
+    /*
+     * The problem we have is that we can't tell the difference between a success and failure, so
+     * it can be fragile to work this out :(
+     *
+     * That's why we only "keep" a snapshot for repl_ IF it appears everything succeedd, but it's
+     * still not perfect, and will need monitoring :(
+     */
+
+    /*
+     * Remove any holds/previous snaps from previous repls on source and dest
+     */
+
+    if do_repl_remote_inner(opt, precursor_name, &basesnap_name).is_err() {
+        info!("Removing potentially un-sent snapshot");
+        let _ = remove_snap(opt.dryrun, basesnap_name.as_str());
+    }
+}
+
+fn do_repl_remote_inner(
+    opt: &ReplRemoteOpt,
+    precursor_name: &str,
+    basesnap_name: &str,
+) -> Result<(), ()> {
     if opt.dryrun {
         info!(
-            "dryrun -> zfs send -R -L -w -I {} {} | ssh {}",
+            "dryrun -> zfs send -v -R -L -w -I {} {} | ssh {}",
             precursor_name, basesnap_name, opt.remote_ssh
         );
+        Err(())
     } else {
         debug!(
-            "running -> zfs send -R -L -w -I {} {} | ssh {}",
+            "running -> zfs send -v -R -L -w -I {} {} | ssh {}",
             precursor_name, basesnap_name, opt.remote_ssh
         );
 
         let send = Command::new("zfs")
             .arg("send")
+            .arg("-v")
             .arg("-R")
             .arg("-L")
             .arg("-w")
             .arg("-I")
-            .arg(precursor_name.as_str())
-            .arg(basesnap_name.as_str())
+            .arg(precursor_name)
+            .arg(basesnap_name)
             .stdout(Stdio::piped())
             .spawn();
 
@@ -781,7 +839,7 @@ fn do_repl_remote(opt: &ReplRemoteOpt) {
             Ok(send) => send,
             Err(e) => {
                 error!("send failed -> {:?}", e);
-                return;
+                return Err(());
             }
         };
 
@@ -797,7 +855,7 @@ fn do_repl_remote(opt: &ReplRemoteOpt) {
             }
             Err(e) => {
                 error!("ssh recv failed -> {:?}", e);
-                return;
+                return Err(());
             }
         };
 
@@ -805,28 +863,19 @@ fn do_repl_remote(opt: &ReplRemoteOpt) {
             Ok(status) => {
                 if !status.success() {
                     error!("send failed");
-                    return;
+                    return Err(());
                 }
                 // Happy path.
             }
             Err(e) => {
                 error!("send failed -> {:?}", e);
-                return;
+                return Err(());
             }
         };
 
-        info!("Incremental remote replication success")
+        info!("Incremental remote replication success");
+        Ok(())
     }
-
-    /*
-     * Remove any holds/previous snaps from previous repls on source and dest
-     */
-     /*
-    debug!("Available Repl Snaps -> {:?}", from_snaps);
-    for leftover_snap in from_snaps {
-        let _ = remove_snap(opt.dryrun, leftover_snap.as_str());
-    }
-    */
 }
 
 fn do_remote_snap_cleanup(opt: &CleanupOpt) {
@@ -867,7 +916,6 @@ fn do_remote_snap_cleanup(opt: &CleanupOpt) {
         let _ = remove_snap(opt.dryrun, snap.as_str());
     }
 }
-
 
 // https://doc.rust-lang.org/std/process/struct.Stdio.html#impl-From%3CChildStdout%3E
 
