@@ -893,6 +893,24 @@ fn do_repl_remote(opt: &ReplRemoteOpt) {
             }
         };
 
+        let meta = match File::create(&opt.auto_snap_metadata) {
+            Ok(f) => f,
+            Err(e) => {
+                error!("failed to open file -> {:?}", e);
+                return;
+            }
+        };
+
+        if let Err(e) = serde_json::to_writer(
+            &meta,
+            &RemoteMetadata {
+                precursor_snap: basesnap_name.clone(),
+            },
+        ) {
+            error!("failed to write metadata file -> {:?}", e);
+            return;
+        }
+
         info!("Incremental remote replication success");
     }
 }
