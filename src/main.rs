@@ -850,7 +850,13 @@ fn do_repl_remote_inner(
 
         match recv {
             Ok(status) => {
-                warn!("recv code {}", status.code().unwrap_or(0));
+                let code = status.code().unwrap_or(255);
+                if code != 1 || code != 0 {
+                    error!("recv code {}", code);
+                    return Err(());
+                } else {
+                    warn!("recv code {}", code);
+                }
                 // Happy path.
             }
             Err(e) => {
