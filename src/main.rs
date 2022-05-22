@@ -592,10 +592,8 @@ fn get_auto_basesnap(pool_name: &str) -> Option<String> {
     let snaps: Vec<_> = filter_snap_list("auto_", pool_name, false).ok()?;
 
     // Find the "latest" autosnap.
-    snaps
-        .into_iter()
-        .last()
-        // .and_then(|snap| snap.rsplit("@").map(str::to_string).next())
+    snaps.into_iter().last()
+    // .and_then(|snap| snap.rsplit("@").map(str::to_string).next())
 }
 
 fn do_init_archive(opt: &InitArchiveOpt) {
