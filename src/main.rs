@@ -1,5 +1,4 @@
-// #![deny(warnings)]
-
+#![deny(warnings)]
 #![warn(unused_extern_crates)]
 #![deny(clippy::unwrap_used)]
 #![deny(clippy::expect_used)]
@@ -16,6 +15,8 @@ use time::OffsetDateTime;
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{fmt, EnvFilter};
+
+use serde::{Deserialize, Serialize};
 
 use std::io;
 
@@ -49,6 +50,16 @@ struct ReplOpt {
 }
 
 #[derive(Debug, StructOpt)]
+struct InitArchiveOpt {
+    pool: String,
+    file: String,
+    /// Path to a json metadata to track which autosnaps we are anchoring from
+    auto_snap_metadata: String,
+    #[structopt(short = "n")]
+    dryrun: bool,
+}
+
+#[derive(Debug, StructOpt)]
 struct ArchiveOpt {
     pool: String,
     file: String,
@@ -58,8 +69,9 @@ struct ArchiveOpt {
 
 #[derive(Debug, StructOpt)]
 struct ReplRemoteOpt {
-    pool: String,
     remote_ssh: String,
+    /// Path to a json metadata to track which autosnaps we are anchoring from
+    auto_snap_metadata: String,
     #[structopt(short = "n")]
     dryrun: bool,
 }
@@ -74,18 +86,21 @@ enum Action {
     Repl(ReplOpt),
 
     #[structopt(name = "remote_init_archive")]
-    InitArchive(ArchiveOpt),
+    InitArchive(InitArchiveOpt),
     #[structopt(name = "remote_load_archive")]
     LoadArchive(ArchiveOpt),
     #[structopt(name = "remote_repl")]
     ReplRemote(ReplRemoteOpt),
-    #[structopt(name = "remote_snapshot_cleanup")]
-    RemoteSnapshotCleanup(CleanupOpt),
 
     #[structopt(name = "snapshot")]
     Snapshot(Opt),
     #[structopt(name = "snapshot_cleanup")]
     SnapshotCleanup(CleanupOpt),
+}
+
+#[derive(Serialize, Deserialize)]
+struct RemoteMetadata {
+    precursor_snap: String,
 }
 
 fn mounted_list() -> Result<Vec<String>, ()> {
@@ -123,17 +138,31 @@ fn mounted_list() -> Result<Vec<String>, ()> {
         .collect())
 }
 
-fn snap_list(pool_name: &str) -> Result<Vec<String>, ()> {
-    let stdout = Command::new("zfs")
-        .arg("list")
-        .arg("-H")
-        .arg("-t")
-        .arg("snapshot")
-        .arg("-o")
-        .arg("name")
-        .arg("-r")
-        .arg(pool_name)
-        .output()
+fn snap_list(pool_name: &str, recurse: bool) -> Result<Vec<String>, ()> {
+    let cmd = if recurse {
+        Command::new("zfs")
+            .arg("list")
+            .arg("-H")
+            .arg("-t")
+            .arg("snapshot")
+            .arg("-o")
+            .arg("name")
+            .arg("-r")
+            .arg(pool_name)
+            .output()
+    } else {
+        Command::new("zfs")
+            .arg("list")
+            .arg("-H")
+            .arg("-t")
+            .arg("snapshot")
+            .arg("-o")
+            .arg("name")
+            .arg(pool_name)
+            .output()
+    };
+
+    let stdout = cmd
         .map_err(|e| {
             error!("snapshot list failed -> {:?}", e);
         })
@@ -148,8 +177,8 @@ fn snap_list(pool_name: &str) -> Result<Vec<String>, ()> {
     Ok(lines)
 }
 
-fn filter_snap_list(filter: &str, pool_name: &str) -> Result<Vec<String>, ()> {
-    let snaps = snap_list(pool_name)?;
+fn filter_snap_list(filter: &str, pool_name: &str, recurse: bool) -> Result<Vec<String>, ()> {
+    let snaps = snap_list(pool_name, recurse)?;
     let mut snaps: Vec<_> = snaps
         .into_iter()
         .filter_map(|snap| {
@@ -170,19 +199,15 @@ fn filter_snap_list(filter: &str, pool_name: &str) -> Result<Vec<String>, ()> {
 }
 
 fn repl_snap_list(pool_name: &str) -> Result<Vec<String>, ()> {
-    filter_snap_list("repl_", pool_name)
-}
-
-fn remote_snap_list(pool_name: &str) -> Result<Vec<String>, ()> {
-    filter_snap_list("remote_", pool_name)
+    filter_snap_list("repl_", pool_name, true)
 }
 
 fn auto_snap_list(pool_name: &str) -> Result<Vec<String>, ()> {
-    filter_snap_list("auto_", pool_name)
+    filter_snap_list("auto_", pool_name, true)
 }
 
 fn do_list(opt: &ListOpt) {
-    if let Ok(names) = snap_list(opt.pool.as_str()) {
+    if let Ok(names) = snap_list(opt.pool.as_str(), true) {
         for name in names {
             info!("{}", name);
         }
@@ -465,11 +490,33 @@ fn do_repl(opt: &ReplOpt) {
      * do the send/recv
      */
     // zfs send -R -h -L nvme@snap1 | zfs recv -o mountpoint=none -o readonly=on tank/nvme
+
+    /*
+     * Remove any holds/previous snaps from previous repls on source and dest
+     */
+    if do_repl_inner(opt, &precursor_name, &basesnap_name).is_err() {
+        info!("Removing potentially un-sent snapshot");
+        let _ = remove_snap(opt.dryrun, basesnap_name.as_str());
+        return;
+    }
+
+    debug!("Available Repl Snaps -> {:?}", from_snaps);
+    for leftover_snap in from_snaps {
+        let _ = remove_snap(opt.dryrun, leftover_snap.as_str());
+    }
+    debug!("Available Repl Snaps -> {:?}", to_snaps);
+    for leftover_snap in to_snaps {
+        let _ = remove_snap(opt.dryrun, leftover_snap.as_str());
+    }
+}
+
+fn do_repl_inner(opt: &ReplOpt, precursor_name: &str, basesnap_name: &str) -> Result<(), ()> {
     if opt.dryrun {
         info!(
             "dryrun -> zfs send -v -R -w -L -I {} {} | zfs recv -o mountpoint=none -o readonly=on {}",
             precursor_name, basesnap_name, opt.to_pool
         );
+        Ok(())
     } else {
         debug!(
             "running -> zfs send -v -R -w -L -I {} {} | zfs recv -o mountpoint=none -o readonly=on {}",
@@ -482,8 +529,8 @@ fn do_repl(opt: &ReplOpt) {
             .arg("-w")
             .arg("-L")
             .arg("-I")
-            .arg(precursor_name.as_str())
-            .arg(basesnap_name.as_str())
+            .arg(precursor_name)
+            .arg(basesnap_name)
             .stdout(Stdio::piped())
             .spawn();
 
@@ -491,7 +538,7 @@ fn do_repl(opt: &ReplOpt) {
             Ok(send) => send,
             Err(e) => {
                 error!("send failed -> {:?}", e);
-                return;
+                return Err(());
             }
         };
 
@@ -507,12 +554,18 @@ fn do_repl(opt: &ReplOpt) {
 
         match recv {
             Ok(status) => {
-                warn!("recv code {}", status.code().unwrap_or(0));
-                // Happy path.
+                let code = status.code().unwrap_or(255);
+                if code == 0 {
+                    warn!("success recv code {}", code);
+                    // Happy path.
+                } else {
+                    error!("recv code {}", code);
+                    return Err(());
+                }
             }
             Err(e) => {
                 error!("ssh recv failed -> {:?}", e);
-                return;
+                return Err(());
             }
         };
 
@@ -520,61 +573,41 @@ fn do_repl(opt: &ReplOpt) {
             Ok(status) => {
                 if !status.success() {
                     error!("send failed");
-                    return;
+                    return Err(());
                 }
                 // Happy path.
             }
             Err(e) => {
                 error!("send failed -> {:?}", e);
-                return;
+                return Err(());
             }
         };
 
-        info!("Incremental replication success")
-    }
-
-    /*
-     * Remove any holds/previous snaps from previous repls on source and dest
-     */
-    debug!("Available Repl Snaps -> {:?}", from_snaps);
-    for leftover_snap in from_snaps {
-        let _ = remove_snap(opt.dryrun, leftover_snap.as_str());
-    }
-    debug!("Available Repl Snaps -> {:?}", to_snaps);
-    for leftover_snap in to_snaps {
-        let _ = remove_snap(opt.dryrun, leftover_snap.as_str());
+        info!("Incremental replication success");
+        Ok(())
     }
 }
 
-fn do_init_archive(opt: &ArchiveOpt) {
+fn get_auto_basesnap(pool_name: &str) -> Option<String> {
+    let snaps: Vec<_> = filter_snap_list("auto_", pool_name, true).ok()?;
+
+    // Find the "latest" autosnap.
+    snaps
+        .iter()
+        .last()
+        .and_then(|snap| snap.rsplit("@").map(str::to_string).next())
+}
+
+fn do_init_archive(opt: &InitArchiveOpt) {
     debug!("do_init_archive");
 
-    let now_ts = match OffsetDateTime::try_now_local() {
-        Ok(t) => t.format("%Y_%m_%d_%H_%M_%S"),
-        Err(_) => {
-            error!("Unable to determine time");
+    let basesnap_name = match get_auto_basesnap(&opt.pool) {
+        Some(b) => b,
+        None => {
+            error!("No auto-snaps available");
             return;
         }
     };
-
-    debug!("{:?}", now_ts);
-
-    let snaps: Vec<_> = match remote_snap_list(opt.pool.as_str()) {
-        Ok(snaps) => snaps,
-        Err(_) => {
-            return;
-        }
-    };
-
-    /*
-     * Init a base snap
-     * Set the hold on the basesnap
-     */
-    let basesnap_name = format!("{}@remote_{}", opt.pool, now_ts);
-
-    if create_recurse_snap(opt.dryrun, basesnap_name.as_str()).is_err() {
-        return;
-    }
 
     /*
      * do the send/recv
@@ -586,6 +619,24 @@ fn do_init_archive(opt: &ArchiveOpt) {
             basesnap_name, opt.file
         );
     } else {
+        let meta = match File::create(&opt.auto_snap_metadata) {
+            Ok(f) => f,
+            Err(e) => {
+                error!("failed to open file -> {:?}", e);
+                return;
+            }
+        };
+
+        if let Err(e) = serde_json::to_writer(
+            &meta,
+            &RemoteMetadata {
+                precursor_snap: basesnap_name.clone(),
+            },
+        ) {
+            error!("failed to write metadata file -> {:?}", e);
+            return;
+        }
+
         let mut file = match File::create(&opt.file) {
             Ok(f) => f,
             Err(e) => {
@@ -633,14 +684,6 @@ fn do_init_archive(opt: &ArchiveOpt) {
         } else {
             info!("Initial replication archive success")
         }
-    }
-
-    /*
-     * Remove any holds/previous snaps from previous remotes
-     */
-    debug!("Available Remote Repl Snaps -> {:?}", snaps);
-    for leftover_snap in snaps {
-        let _ = remove_snap(opt.dryrun, leftover_snap.as_str());
     }
 }
 
@@ -713,56 +756,6 @@ fn do_load_archive(opt: &ArchiveOpt) {
 fn do_repl_remote(opt: &ReplRemoteOpt) {
     debug!("do_repl_remote");
 
-    let now_ts = match OffsetDateTime::try_now_local() {
-        Ok(t) => t.format("%Y_%m_%d_%H_%M_%S"),
-        Err(_) => {
-            error!("Unable to determine time");
-            return;
-        }
-    };
-
-    debug!("{:?}", now_ts);
-
-    let from_snaps: Vec<_> = match remote_snap_list(opt.pool.as_str()) {
-        Ok(snaps) => snaps,
-        Err(_) => {
-            return;
-        }
-    };
-
-    debug!("{:?}", from_snaps);
-
-    // What is the precursor snap? We remove it from the set of cleanup snaps.
-    // Because this is a remote sync, it "should" be our OLDEST repl snapshot, rooted
-    // at the pool root.
-    let prefix = format!("{}@", opt.pool);
-    let precursor_name = match from_snaps
-        .iter()
-        .filter_map(|snap| {
-            if snap.starts_with(prefix.as_str()) {
-                Some(snap)
-            } else {
-                None
-            }
-        })
-        // Per the below, we need the LATEST snapshot to anchor from
-        .last()
-    {
-        Some(n) => n,
-        None => {
-            error!("No previous matching snaps available - you may need to restart repl");
-            return;
-        }
-    };
-
-    /*
-     * Init a new repl snap for our current point in time.
-     */
-    let basesnap_name = format!("{}@remote_{}", opt.pool, now_ts);
-    if create_recurse_snap(opt.dryrun, basesnap_name.as_str()).is_err() {
-        return;
-    }
-
     /*
      * If you get:
      *  cannot receive incremental stream: most recent snapshot of tank/remote does not
@@ -799,27 +792,45 @@ fn do_repl_remote(opt: &ReplRemoteOpt) {
      * still not perfect, and will need monitoring :(
      */
 
+    // Get the precursor snap from the metadata
+    let meta: RemoteMetadata = match File::open(&opt.auto_snap_metadata)
+        .map_err(|e| {
+            error!("Failed to open metadata file {:?}", e);
+            ()
+        })
+        .and_then(|f| {
+            serde_json::from_reader(f).map_err(|e| {
+                error!("Failed to parse metadata file {:?}", e);
+                ()
+            })
+        }) {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+
+    let precursor_name = meta.precursor_snap;
+
+    let pool = precursor_name.split('@').next().unwrap();
+
+    // get the new base snap from the latest auto.
+    let basesnap_name = match get_auto_basesnap(pool) {
+        Some(b) => b,
+        None => {
+            error!("No auto-snaps available");
+            return;
+        }
+    };
+
     /*
      * Remove any holds/previous snaps from previous repls on source and dest
      */
 
-    if do_repl_remote_inner(opt, precursor_name, &basesnap_name).is_err() {
-        info!("Removing potentially un-sent snapshot");
-        let _ = remove_snap(opt.dryrun, basesnap_name.as_str());
-    }
-}
-
-fn do_repl_remote_inner(
-    opt: &ReplRemoteOpt,
-    precursor_name: &str,
-    basesnap_name: &str,
-) -> Result<(), ()> {
     if opt.dryrun {
         info!(
             "dryrun -> zfs send -v -R -L -w -I {} {} | ssh {}",
             precursor_name, basesnap_name, opt.remote_ssh
         );
-        Err(())
+        return;
     } else {
         debug!(
             "running -> zfs send -v -R -L -w -I {} {} | ssh {}",
@@ -842,7 +853,7 @@ fn do_repl_remote_inner(
             Ok(send) => send,
             Err(e) => {
                 error!("send failed -> {:?}", e);
-                return Err(());
+                return;
             }
         };
 
@@ -856,15 +867,15 @@ fn do_repl_remote_inner(
                 let code = status.code().unwrap_or(255);
                 if code == 1 || code == 0 {
                     warn!("success recv code {}", code);
+                    // Happy path.
                 } else {
                     error!("recv code {}", code);
-                    return Err(());
+                    return;
                 }
-                // Happy path.
             }
             Err(e) => {
                 error!("ssh recv failed -> {:?}", e);
-                return Err(());
+                return;
             }
         };
 
@@ -872,57 +883,17 @@ fn do_repl_remote_inner(
             Ok(status) => {
                 if !status.success() {
                     error!("send failed");
-                    return Err(());
+                    return;
                 }
                 // Happy path.
             }
             Err(e) => {
                 error!("send failed -> {:?}", e);
-                return Err(());
+                return;
             }
         };
 
         info!("Incremental remote replication success");
-        Ok(())
-    }
-}
-
-fn do_remote_snap_cleanup(opt: &CleanupOpt) {
-    let dur = time::Duration::hours(opt.keep_hours as i64);
-    let now_ts = match OffsetDateTime::try_now_local() {
-        Ok(t) => (t - dur).format("%Y_%m_%d_%H_%M_%S"),
-        Err(_) => {
-            error!("Unable to determine time");
-            return;
-        }
-    };
-
-    debug!("{:?}", now_ts);
-
-    let snaps: Vec<_> = match remote_snap_list(opt.pool.as_str()) {
-        Ok(snaps) => snaps,
-        Err(_) => {
-            return;
-        }
-    };
-
-    let up_to_ts = format!("remote_{}", now_ts);
-
-    let remove_snaps: Vec<_> = snaps
-        .into_iter()
-        .filter(|snap_name| {
-            if let Some(n) = snap_name.rsplit("@").next() {
-                n.starts_with("auto_") && n < up_to_ts.as_str()
-            } else {
-                false
-            }
-        })
-        .collect();
-
-    debug!("would remove -> {:?}", remove_snaps);
-
-    for snap in remove_snaps {
-        let _ = remove_snap(opt.dryrun, snap.as_str());
     }
 }
 
@@ -950,7 +921,6 @@ fn main() {
         Action::InitArchive(opt) => do_init_archive(&opt),
         Action::LoadArchive(opt) => do_load_archive(&opt),
         Action::ReplRemote(opt) => do_repl_remote(&opt),
-        Action::RemoteSnapshotCleanup(opt) => do_remote_snap_cleanup(&opt),
         Action::Snapshot(opt) => do_snap(&opt),
         Action::SnapshotCleanup(opt) => do_snap_cleanup(&opt),
     }
