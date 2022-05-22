@@ -343,19 +343,20 @@ fn do_init(opt: &ReplOpt) {
 
     /*
      * do the send/recv
-     * -w for encyrption to stay raw
+     * -w for encyrption to stay raw. Is that needed locally?
      */
     if opt.dryrun {
         info!(
-            "dryrun -> zfs send -R -L -w {} | zfs recv -o mountpoint=none -o readonly=true {}",
+            "dryrun -> zfs send -v -R -L {} | zfs recv -o mountpoint=none -o readonly=true {}",
             basesnap_name, opt.to_pool
         );
     } else {
         let send = Command::new("zfs")
             .arg("send")
+            .arg("-v")
             .arg("-R")
             .arg("-L")
-            .arg("-w")
+            // .arg("-w")
             .arg(basesnap_name.as_str())
             .stdout(Stdio::piped())
             .spawn();
@@ -466,20 +467,21 @@ fn do_repl(opt: &ReplOpt) {
     // zfs send -R -h -L nvme@snap1 | zfs recv -o mountpoint=none -o readonly=true tank/nvme
     if opt.dryrun {
         info!(
-            "dryrun -> zfs send -R -L -I -w {} {} | zfs recv -o mountpoint=none -o readonly=true {}",
+            "dryrun -> zfs send -v -R -L -I {} {} | zfs recv -o mountpoint=none -o readonly=true {}",
             precursor_name, basesnap_name, opt.to_pool
         );
     } else {
         debug!(
-            "running -> zfs send -R -L -I -w {} {} | zfs recv -o mountpoint=none -o readonly=true {}",
+            "running -> zfs send -v -R -L -I {} {} | zfs recv -o mountpoint=none -o readonly=true {}",
             precursor_name, basesnap_name, opt.to_pool
         );
         let send = Command::new("zfs")
             .arg("send")
+            .arg("-v")
             .arg("-R")
             .arg("-L")
             .arg("-I")
-            .arg("-w")
+            // .arg("-w")
             .arg(precursor_name.as_str())
             .arg(basesnap_name.as_str())
             .stdout(Stdio::piped())
@@ -580,7 +582,7 @@ fn do_init_archive(opt: &ArchiveOpt) {
      */
     if opt.dryrun {
         info!(
-            "dryrun -> zfs send -R -L -w {} > {}",
+            "dryrun -> zfs send -v -R -L -w {} > {}",
             basesnap_name, opt.file
         );
     } else {
@@ -594,6 +596,7 @@ fn do_init_archive(opt: &ArchiveOpt) {
 
         let send = Command::new("zfs")
             .arg("send")
+            .arg("-v")
             .arg("-R")
             .arg("-L")
             .arg("-w")
@@ -851,11 +854,11 @@ fn do_repl_remote_inner(
         match recv {
             Ok(status) => {
                 let code = status.code().unwrap_or(255);
-                if code != 1 || code != 0 {
+                if code == 1 || code == 0 {
+                    warn!("success recv code {}", code);
+                } else {
                     error!("recv code {}", code);
                     return Err(());
-                } else {
-                    warn!("recv code {}", code);
                 }
                 // Happy path.
             }
