@@ -9,8 +9,21 @@ within a single host.
 To automatically snapshot *all* pools on your system which have *mounted* filesystems:
 
 ```
+znapper snapshot [filesystem name]...
 znapper snapshot
+znapper snapshot tank
+znapper snapshot tank tonk tunk
+znapper snapshot tank/pab tonk/pob tunk/pub
 ```
+
+> NOTE: Only the mounted filesystems are snapshot. If it has no mountpoint, for example:
+
+```
+NAME                                             USED  AVAIL     REFER  MOUNTPOINT
+nvme                                             388G   228G       96K  none
+```
+
+This filesystem will NOT be snapshot, but it's descendants that are mounted will be!
 
 To clean-up old automatic snapshots
 
@@ -40,6 +53,16 @@ To then do an incremental replication
 ```
 znapper repl <from filesystem> <to filesystem>
 znapper repl nvme tank/nvme
+```
+
+> NOTE: local repl assumes the "to" filesystem is an exact match of name and structure. An example is:
+
+```
+# WOULD FAIL!
+znapper init_repl nvme/descendant tank/repl/nvme
+
+# Would work!
+znapper init_repl nvme/descendant tank/repl/nvme/descendant
 ```
 
 # How does it work? 
@@ -94,6 +117,10 @@ Description=ZFS daily replicate service
 Type=oneshot
 ExecStart=znapper repl nvme tank/nvme
 ```
+
+> NOTE: Due to the "only mounted" filesystems are snapshot behaviour, when you replicate nvme to
+> tank/nvme here, the repl target of tank/nvme will NOT be snapshot, but the snapshots of nvme
+> are preserved!
 
 ```
 zfs-auto-replicate-daily.timer
