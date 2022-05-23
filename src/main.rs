@@ -112,6 +112,7 @@ fn mounted_list(pools: &[String]) -> Result<Vec<String>, ()> {
 
     cmd.arg("list")
         .arg("-H")
+        .arg("-r")
         .arg("-t")
         .arg("filesystem")
         .arg("-o")
