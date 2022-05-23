@@ -22,6 +22,10 @@ use std::io;
 
 #[derive(Debug, StructOpt)]
 struct Opt {
+    /// If filesystems/pools are listed, only these will be recursively snapshotted.
+    ///
+    /// Else if not specified all pools will be recursively snapshotted
+    pools: Vec<String>,
     #[structopt(short = "n")]
     dryrun: bool,
 }
@@ -103,14 +107,21 @@ struct RemoteMetadata {
     precursor_snap: String,
 }
 
-fn mounted_list() -> Result<Vec<String>, ()> {
-    let stdout = Command::new("zfs")
-        .arg("list")
+fn mounted_list(pools: &[String]) -> Result<Vec<String>, ()> {
+    let mut cmd = Command::new("zfs");
+
+    cmd.arg("list")
         .arg("-H")
         .arg("-t")
         .arg("filesystem")
         .arg("-o")
-        .arg("name,mountpoint")
+        .arg("name,mountpoint");
+
+    for pool in pools {
+        cmd.arg(pool.as_str());
+    }
+
+    let stdout = cmd
         .output()
         .map_err(|e| {
             error!("mounted list failed -> {:?}", e);
@@ -274,7 +285,7 @@ fn create_recurse_snap(dry: bool, snap_name: &str) -> Result<(), ()> {
 }
 
 fn do_snap(opt: &Opt) {
-    let mounted: Vec<_> = match mounted_list() {
+    let mounted: Vec<_> = match mounted_list(&opt.pools) {
         Ok(fs) => fs,
         Err(_) => {
             return;
