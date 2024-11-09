@@ -702,7 +702,7 @@ fn do_load_archive(opt: &ArchiveOpt) {
 
     if opt.dryrun {
         info!(
-            "dryrun -> cat {} | zfs recv -o mountpoint=none -o readonly=on {}",
+            "dryrun -> cat {} | zfs recv -v -o mountpoint=none -o readonly=on {}",
             opt.file, opt.pool
         );
     } else {
@@ -716,6 +716,7 @@ fn do_load_archive(opt: &ArchiveOpt) {
 
         let recv = Command::new("zfs")
             .arg("recv")
+            .arg("-v")
             .arg("-o")
             .arg("mountpoint=none")
             .arg("-o")
