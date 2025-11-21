@@ -81,6 +81,27 @@ Any replicated filesystem is *not* mounted and marked as read-only in the proces
 one of these snapshots, you can either zfs send back to the original pool, or temporarily mount
 the fs to manually recover.
 
+# FreeBSD setup
+
+```
+pkg install rust git
+git clone ....
+cd znapper
+cargo build --release
+crontab -e
+```
+
+```
+SHELL=/bin/sh
+PATH=/etc:/bin:/sbin:/usr/bin:/usr/sbin
+# Order of crontab fields
+# minute        hour    mday    month   wday    command
+
+0               *       *       *       *       /root/znapper/target/release/znapper snapshot
+10              *       *       *       *       /root/znapper/target/release/znapper snapshot_cleanup zroot 48
+20              *       *       *       *       /root/znapper/target/release/znapper snapshot_cleanup tank 48
+```
+
 # Example systemd service files to automate this process.
 
 ```
