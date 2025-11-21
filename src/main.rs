@@ -107,14 +107,22 @@ struct RemoteMetadata {
     precursor_snap: String,
 }
 
+fn volume_list(pools: &[String]) -> Result<Vec<String>, ()> {
+    zfs_typed_list("volume", pools)
+}
+
 fn mounted_list(pools: &[String]) -> Result<Vec<String>, ()> {
+    zfs_typed_list("filesystem", pools)
+}
+
+fn zfs_typed_list(fs_type: &str, pools: &[String]) -> Result<Vec<String>, ()> {
     let mut cmd = Command::new("zfs");
 
     cmd.arg("list")
         .arg("-H")
         .arg("-r")
         .arg("-t")
-        .arg("filesystem")
+        .arg(fs_type)
         .arg("-o")
         .arg("name,mountpoint");
 
@@ -141,11 +149,13 @@ fn mounted_list(pools: &[String]) -> Result<Vec<String>, ()> {
         .filter_map(|line| {
             let mut lsplit = line.split_whitespace();
             match (lsplit.next(), lsplit.next()) {
+                // Works on volumes as "-" isn't none!
                 (Some(_), Some("none")) => None,
                 (Some(name), Some(_)) => Some(name),
                 _ => None,
             }
         })
+        // We just return the zfs volume name.
         .map(str::to_string)
         .collect())
 }
@@ -293,6 +303,13 @@ fn do_snap(opt: &Opt) {
         }
     };
 
+    let volumes: Vec<_> = match volume_list(&opt.pools) {
+        Ok(fs) => fs,
+        Err(_) => {
+            return;
+        }
+    };
+
     let now_ts = match OffsetDateTime::try_now_local() {
         Ok(t) => t.format("%Y_%m_%d_%H_%M_%S"),
         Err(_) => {
@@ -301,7 +318,7 @@ fn do_snap(opt: &Opt) {
         }
     };
 
-    for fs in mounted.iter() {
+    for fs in mounted.iter().chain(volumes.iter()) {
         let snap_name = format!("{}@auto_{}", fs, now_ts);
         if create_snap(opt.dryrun, snap_name.as_str()).is_err() {
             warn!("Failed to create snapshot -> {}", snap_name);
