@@ -107,15 +107,7 @@ struct RemoteMetadata {
     precursor_snap: String,
 }
 
-fn volume_list(pools: &[String]) -> Result<Vec<String>, ()> {
-    zfs_typed_list("volume", pools)
-}
-
-fn mounted_list(pools: &[String]) -> Result<Vec<String>, ()> {
-    zfs_typed_list("filesystem", pools)
-}
-
-fn zfs_typed_list(fs_type: &str, pools: &[String]) -> Result<Vec<String>, ()> {
+fn zfs_list(fs_type: &str, pools: &[String]) -> Result<Vec<String>, ()> {
     let mut cmd = Command::new("zfs");
 
     cmd.arg("list")
@@ -124,7 +116,7 @@ fn zfs_typed_list(fs_type: &str, pools: &[String]) -> Result<Vec<String>, ()> {
         .arg("-t")
         .arg(fs_type)
         .arg("-o")
-        .arg("name,mountpoint");
+        .arg("name,znapper:target");
 
     for pool in pools {
         cmd.arg(pool.as_str());
@@ -149,9 +141,11 @@ fn zfs_typed_list(fs_type: &str, pools: &[String]) -> Result<Vec<String>, ()> {
         .filter_map(|line| {
             let mut lsplit = line.split_whitespace();
             match (lsplit.next(), lsplit.next()) {
-                // Works on volumes as "-" isn't none!
-                (Some(_), Some("none")) => None,
-                (Some(name), Some(_)) => Some(name),
+                // It's a repl target, ignore
+                (_, Some("true")) => None,
+                // Not a repl target, lets go!
+                (Some(name), Some("-")) => Some(name),
+                // Invalid output
                 _ => None,
             }
         })
@@ -296,14 +290,14 @@ fn create_recurse_snap(dry: bool, snap_name: &str) -> Result<(), ()> {
 }
 
 fn do_snap(opt: &Opt) {
-    let mounted: Vec<_> = match mounted_list(&opt.pools) {
+    let mounted: Vec<_> = match zfs_list("filesystem", &opt.pools) {
         Ok(fs) => fs,
         Err(_) => {
             return;
         }
     };
 
-    let volumes: Vec<_> = match volume_list(&opt.pools) {
+    let volumes: Vec<_> = match zfs_list("volume", &opt.pools) {
         Ok(fs) => fs,
         Err(_) => {
             return;
@@ -401,7 +395,7 @@ fn do_init(opt: &ReplOpt) {
      */
     if opt.dryrun {
         info!(
-            "dryrun -> zfs send -v -R -w -L {} | zfs recv -o mountpoint=none -o readonly=on {}",
+            "dryrun -> zfs send -v -R -w -L {} | zfs recv -o mountpoint=none -o readonly=on -o znapper:target=true {}",
             basesnap_name, opt.to_pool
         );
     } else {
@@ -429,6 +423,8 @@ fn do_init(opt: &ReplOpt) {
             .arg("mountpoint=none")
             .arg("-o")
             .arg("readonly=on")
+            .arg("-o")
+            .arg("znapper:target=true")
             .arg(opt.to_pool.as_str())
             .stdin(send.stdout.take().unwrap())
             .status();
@@ -542,13 +538,13 @@ fn do_repl(opt: &ReplOpt) {
 fn do_repl_inner(opt: &ReplOpt, precursor_name: &str, basesnap_name: &str) -> Result<(), ()> {
     if opt.dryrun {
         info!(
-            "dryrun -> zfs send -v -R -w -L -I {} {} | zfs recv -o mountpoint=none -o readonly=on {}",
+            "dryrun -> zfs send -v -R -w -L -I {} {} | zfs recv -o mountpoint=none -o readonly=on -o znapper:target=true {}",
             precursor_name, basesnap_name, opt.to_pool
         );
         Ok(())
     } else {
         debug!(
-            "running -> zfs send -v -R -w -L -I {} {} | zfs recv -o mountpoint=none -o readonly=on {}",
+            "running -> zfs send -v -R -w -L -I {} {} | zfs recv -o mountpoint=none -o readonly=on -o znapper:target=true  {}",
             precursor_name, basesnap_name, opt.to_pool
         );
         let send = Command::new("zfs")
@@ -577,6 +573,8 @@ fn do_repl_inner(opt: &ReplOpt, precursor_name: &str, basesnap_name: &str) -> Re
             .arg("mountpoint=none")
             .arg("-o")
             .arg("readonly=on")
+            .arg("-o")
+            .arg("znapper:target=true")
             .arg(opt.to_pool.as_str())
             .stdin(send.stdout.take().unwrap())
             .status();
@@ -719,7 +717,7 @@ fn do_load_archive(opt: &ArchiveOpt) {
 
     if opt.dryrun {
         info!(
-            "dryrun -> cat {} | zfs recv -v -o mountpoint=none -o readonly=on {}",
+            "dryrun -> cat {} | zfs recv -v -o mountpoint=none -o readonly=on  -o znapper:target=true {}",
             opt.file, opt.pool
         );
     } else {
@@ -738,6 +736,8 @@ fn do_load_archive(opt: &ArchiveOpt) {
             .arg("mountpoint=none")
             .arg("-o")
             .arg("readonly=on")
+            .arg("-o")
+            .arg("znapper:target=true")
             .arg(opt.pool.as_str())
             .stdin(Stdio::piped())
             .spawn();
